@@ -1,10 +1,15 @@
 {
   "name": "can-my-agent-code-this",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Instant AI coding-agent readiness scores for public GitHub repositories.",
+  "description": "Ecosystem-aware AI coding-agent readiness audits for public GitHub repositories.",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "lint": "node --check scoring.js && node --check app.js",
+    "check": "npm run lint && npm test"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "license": "MIT"
 }
