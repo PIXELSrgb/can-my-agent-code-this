@@ -1,0 +1,22 @@
+name: Scoring idea
+about: Propose a repository signal the scanner should detect
+labels: enhancement
+body:
+  - type: input
+    id: signal
+    attributes:
+      label: Signal
+      placeholder: e.g. detect mise.toml setup instructions
+    validations:
+      required: true
+  - type: input
+    id: example
+    attributes:
+      label: Example public repository
+      placeholder: owner/repo
+  - type: textarea
+    id: why
+    attributes:
+      label: Why should agents care?
+    validations:
+      required: true
