@@ -7,13 +7,13 @@ const button = $('scanBtn');
 const statusEl = $('status');
 const resultEl = $('result');
 
+const githubHeaders = {
+  Accept: 'application/vnd.github+json',
+  'X-GitHub-Api-Version': '2022-11-28',
+};
+
 async function getJson(url) {
-  const res = await fetch(url, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-  });
+  const res = await fetch(url, { headers: githubHeaders });
   if (!res.ok) {
     const remaining = res.headers.get('x-ratelimit-remaining');
     if (res.status === 403 && remaining === '0') throw new Error('GitHub rate limit hit. Try again later or from another network.');
@@ -21,6 +21,15 @@ async function getJson(url) {
     throw new Error(`GitHub returned ${res.status}. Try again.`);
   }
   return res.json();
+}
+
+async function getOptionalJson(url) {
+  try {
+    const res = await fetch(url, { headers: githubHeaders });
+    return res.ok ? res.json() : {};
+  } catch (_) {
+    return {};
+  }
 }
 
 async function getText(url) {
@@ -68,15 +77,57 @@ async function collectTexts(repo, branch, tree, primaryLanguage = '') {
   return texts;
 }
 
-function render(repo, meta, analysis) {
-  $('repoLabel').textContent = repo;
+function formatLanguages(languages, fallback = 'Unknown') {
+  const entries = Object.entries(languages || {})
+    .filter(([, bytes]) => Number(bytes) > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]));
+  if (!entries.length) return { short: fallback || 'Unknown', full: fallback || 'Unknown' };
+
+  const total = entries.reduce((sum, [, bytes]) => sum + Number(bytes), 0) || 1;
+  const formatted = entries.map(([name, bytes]) => ({ name, pct: (Number(bytes) / total) * 100 }));
+  const visible = formatted.filter((item, index) => index === 0 || item.pct >= 5).slice(0, 3);
+  const full = formatted.slice(0, 6).map(item => `${item.name} ${item.pct.toFixed(item.pct >= 10 ? 0 : 1)}%`).join(' · ');
+  const short = visible.map(item => `${item.name} ${item.pct.toFixed(item.pct >= 10 ? 0 : 1)}%`).join(' · ');
+  return { short, full };
+}
+
+function formatTooling(stack = '') {
+  const s = String(stack || '');
+  const lower = s.toLowerCase();
+  const bazel = lower.includes('bazel');
+  if (lower.includes('rust') || lower.includes('cargo')) return bazel ? 'Cargo + Bazel' : 'Cargo';
+  if (lower.includes('node')) return 'Node / npm';
+  if (lower.includes('gradle')) return 'Gradle';
+  if (lower.includes('maven')) return 'Maven';
+  if (lower.includes('python')) return 'Python tooling';
+  if (lower.includes('go')) return 'Go toolchain';
+  if (lower.includes('ruby')) return 'Bundler / Rake';
+  if (lower.includes('composer')) return 'Composer';
+  if (lower.includes('elixir')) return 'Mix';
+  if (lower.includes('cmake')) return 'CMake';
+  if (bazel) return 'Bazel';
+  return s.replace(/\s*\(multi-stack\)/gi, '').replace(/\s*\+\s*Bazel/gi, ' + Bazel') || 'Not detected';
+}
+
+function displayDetail(key, analysis, tooling) {
+  if (key !== 'clarity') return analysis.details[key];
+  return String(analysis.details[key] || '').replace(analysis.stack, tooling);
+}
+
+function render(repo, meta, analysis, languages) {
+  const languageInfo = formatLanguages(languages, meta.language || 'Unknown');
+  const tooling = formatTooling(analysis.stack);
+
+  $('repoLabel').textContent = meta.full_name || repo;
   $('verdict').textContent = analysis.verdict;
-  $('summary').textContent = `${meta.description || 'No repository description.'} ${Number(meta.stargazers_count || 0).toLocaleString()}★ · ${meta.language || 'mixed'} · updated ${new Date(meta.updated_at).toLocaleDateString()}.`;
+  $('summary').textContent = `${meta.description || 'No repository description.'} ${Number(meta.stargazers_count || 0).toLocaleString()}★ · updated ${new Date(meta.updated_at).toLocaleDateString()}.`;
   $('score').textContent = analysis.score;
   $('scoreRing').style.setProperty('--score', analysis.score);
   $('grade').textContent = analysis.grade;
-  $('stackLabel').textContent = analysis.stack;
-  $('stackLabel').title = analysis.stack;
+  $('languageLabel').textContent = languageInfo.short;
+  $('languageLabel').title = `GitHub language breakdown: ${languageInfo.full}`;
+  $('toolingLabel').textContent = `Tooling: ${tooling}`;
+  $('toolingLabel').title = `Detected build/test ecosystem: ${tooling}`;
   $('verifyLabel').textContent = compactCommand(analysis.verifyCommand);
   $('verifyLabel').title = analysis.verifyCommand;
   $('confidenceLabel').textContent = analysis.confidence;
@@ -90,16 +141,19 @@ function render(repo, meta, analysis) {
     const ratio = points / c.max;
     const state = ratio >= 0.8 ? 'good' : ratio >= 0.45 ? 'mid' : 'bad';
     const icon = state === 'good' ? '✓' : state === 'mid' ? '~' : '×';
-    return `<div class="check"><span class="check-icon ${state}">${icon}</span><div><strong>${c.name}</strong><small>${escapeHtml(analysis.details[c.key])}</small></div><span class="points">${points}/${c.max}</span></div>`;
+    const detail = displayDetail(c.key, analysis, tooling);
+    return `<div class="check"><span class="check-icon ${state}">${icon}</span><div><strong>${c.name}</strong><small>${escapeHtml(detail)}</small></div><span class="points">${points}/${c.max}</span></div>`;
   }).join('');
 
   $('fixes').innerHTML = analysis.fixes.length
     ? analysis.fixes.map(f => `<div class="fix"><div class="fix-top"><strong>${escapeHtml(f.title)}</strong><span class="impact">${f.impact}</span></div><p>${escapeHtml(f.body)}</p></div>`).join('')
     : `<div class="all-good"><strong>No structural gaps detected.</strong><br>This repo hits every v2 readiness signal. The remaining question is whether its instructions and tests are actually accurate.</div>`;
 
-  $('confidenceNote').textContent = analysis.confidenceNote;
+  $('confidenceNote').textContent = `${analysis.confidenceNote} Language percentages come from GitHub Linguist's public language breakdown.`;
   resultEl.classList.remove('hidden');
   resultEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  return { languageInfo, tooling };
 }
 
 function compactCommand(command) {
@@ -119,18 +173,29 @@ async function scan(repo) {
 
   try {
     const meta = await getJson(`https://api.github.com/repos/${repo}`);
-    statusEl.textContent = `Found ${meta.full_name}. Mapping ${meta.default_branch}…`;
+    const canonicalRepo = meta.full_name || repo;
+    statusEl.textContent = `Found ${canonicalRepo}. Mapping ${meta.default_branch}…`;
     const branch = encodeURIComponent(meta.default_branch);
-    const treeData = await getJson(`https://api.github.com/repos/${repo}/git/trees/${branch}?recursive=1`);
+    const [treeData, languages] = await Promise.all([
+      getJson(`https://api.github.com/repos/${canonicalRepo}/git/trees/${branch}?recursive=1`),
+      getOptionalJson(`https://api.github.com/repos/${canonicalRepo}/languages`),
+    ]);
     const tree = treeData.tree || [];
-    statusEl.textContent = 'Detecting stack, verification, CI and guardrails…';
-    const texts = await collectTexts(repo, meta.default_branch, tree, meta.language);
+    statusEl.textContent = 'Detecting languages, tooling, verification, CI and guardrails…';
+    const texts = await collectTexts(canonicalRepo, meta.default_branch, tree, meta.language);
     const analysis = analyze(meta, tree, texts, { truncated: Boolean(treeData.truncated) });
 
-    render(repo, meta, analysis);
+    const display = render(repo, meta, analysis, languages);
     statusEl.textContent = treeData.truncated ? 'Done — medium confidence because GitHub truncated this very large repo tree.' : '';
-    history.replaceState(null, '', `${location.pathname}?repo=${encodeURIComponent(repo)}`);
-    window.__lastAudit = { repo, meta, analysis };
+    history.replaceState(null, '', `${location.pathname}?repo=${encodeURIComponent(canonicalRepo)}`);
+    window.__lastAudit = {
+      repo: canonicalRepo,
+      meta,
+      analysis,
+      languages,
+      languageSummary: display.languageInfo.short,
+      tooling: display.tooling,
+    };
   } catch (err) {
     statusEl.textContent = err.message || 'Something went wrong.';
   } finally {
@@ -160,10 +225,10 @@ $('copyAudit').addEventListener('click', async () => {
   const lines = [
     `Can My Agent Code This? — ${a.repo}`,
     `${a.analysis.score}/100 · Grade ${a.analysis.grade} · ${a.analysis.verdict}`,
-    `Stack: ${a.analysis.stack} · Verify: ${a.analysis.verifyCommand} · Confidence: ${a.analysis.confidence}`,
+    `Languages: ${a.languageSummary} · Tooling: ${a.tooling} · Verify: ${a.analysis.verifyCommand} · Confidence: ${a.analysis.confidence}`,
     '',
   ];
-  CATEGORIES.forEach(c => lines.push(`${c.name}: ${a.analysis.scores[c.key]}/${c.max} — ${a.analysis.details[c.key]}`));
+  CATEGORIES.forEach(c => lines.push(`${c.name}: ${a.analysis.scores[c.key]}/${c.max} — ${displayDetail(c.key, a.analysis, a.tooling)}`));
   if (a.analysis.fixes.length) {
     lines.push('', 'Top fixes:');
     a.analysis.fixes.forEach(f => lines.push(`- ${f.title} (${f.impact})`));
