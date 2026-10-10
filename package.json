@@ -1,0 +1,10 @@
+{
+  "name": "can-my-agent-code-this",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Instant AI coding-agent readiness scores for public GitHub repositories.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
