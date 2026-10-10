@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs><radialGradient id="g" cx="80%" cy="0%" r="70%"><stop offset="0" stop-color="#293a13"/><stop offset="1" stop-color="#090a0c"/></radialGradient></defs>
+  <rect width="1200" height="630" fill="url(#g)"/>
+  <rect x="55" y="55" width="1090" height="520" rx="28" fill="#0d0f12" stroke="#282d34"/>
+  <circle cx="91" cy="91" r="7" fill="#b7ff3c"/>
+  <text x="112" y="98" fill="#8d949e" font-size="18" font-family="monospace">ZERO BACKEND · ZERO API KEYS</text>
+  <text x="92" y="245" fill="#f4f6f8" font-size="90" font-weight="900" font-family="Arial, sans-serif" letter-spacing="-6">CAN MY AGENT</text>
+  <text x="92" y="337" fill="#b7ff3c" font-size="90" font-weight="900" font-family="Arial, sans-serif" letter-spacing="-6">CODE THIS?</text>
+  <rect x="92" y="405" width="680" height="76" rx="14" fill="#111318" stroke="#353b43"/>
+  <text x="120" y="453" fill="#b7ff3c" font-size="24" font-family="monospace">$</text>
+  <text x="158" y="453" fill="#b6bbc3" font-size="22" font-family="monospace">github.com/owner/repo</text>
+  <circle cx="972" cy="315" r="102" fill="#090a0c" stroke="#b7ff3c" stroke-width="9"/>
+  <text x="972" y="327" text-anchor="middle" fill="#f4f6f8" font-size="58" font-family="Arial" font-weight="900">87</text>
+  <text x="972" y="355" text-anchor="middle" fill="#8d949e" font-size="18" font-family="monospace">/100</text>
+  <text x="972" y="452" text-anchor="middle" fill="#b7ff3c" font-size="18" font-family="monospace" font-weight="700">AGENT-READY?</text>
+</svg>
