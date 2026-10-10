@@ -36,18 +36,31 @@ function encodePath(path) {
   return path.split('/').map(encodeURIComponent).join('/');
 }
 
-async function collectTexts(repo, branch, tree) {
+async function collectTexts(repo, branch, tree, primaryLanguage = '') {
   const pathMap = new Map(tree.map(n => [String(n.path || '').toLowerCase(), n.path]).filter(([, p]) => p));
-  const wanted = [
+  const wanted = new Set([
     'package.json', 'pyproject.toml', 'cargo.toml', 'readme.md', 'contributing.md',
     'agents.md', 'claude.md', 'gemini.md', '.github/copilot-instructions.md',
-  ];
+    'justfile', 'makefile', 'gnumakefile', 'taskfile.yml', 'taskfile.yaml',
+  ]);
+
+  const firstByBasename = basename => [...pathMap.keys()].find(p => p === basename || p.endsWith(`/${basename}`));
+  const primary = String(primaryLanguage || '').toLowerCase();
+  const ecosystemFiles = primary === 'rust' ? ['cargo.toml']
+    : primary === 'go' ? ['go.mod']
+    : primary === 'python' ? ['pyproject.toml']
+    : ['cargo.toml', 'go.mod', 'pyproject.toml'];
+  for (const basename of ecosystemFiles) {
+    const found = firstByBasename(basename);
+    if (found) wanted.add(found);
+  }
+
   const nestedAgent = [...pathMap.keys()].find(p => /(^|\/)agents\.md$/.test(p));
-  if (nestedAgent && !wanted.includes(nestedAgent)) wanted.push(nestedAgent);
+  if (nestedAgent) wanted.add(nestedAgent);
 
   const texts = {};
   const rawBase = `https://raw.githubusercontent.com/${repo}/${encodeURIComponent(branch)}`;
-  await Promise.all(wanted.map(async lower => {
+  await Promise.all([...wanted].map(async lower => {
     const actual = pathMap.get(lower);
     if (!actual) return;
     texts[lower] = await getText(`${rawBase}/${encodePath(actual)}`);
@@ -63,7 +76,9 @@ function render(repo, meta, analysis) {
   $('scoreRing').style.setProperty('--score', analysis.score);
   $('grade').textContent = analysis.grade;
   $('stackLabel').textContent = analysis.stack;
+  $('stackLabel').title = analysis.stack;
   $('verifyLabel').textContent = compactCommand(analysis.verifyCommand);
+  $('verifyLabel').title = analysis.verifyCommand;
   $('confidenceLabel').textContent = analysis.confidence;
   $('confidenceLabel').title = analysis.confidenceNote;
 
@@ -109,7 +124,7 @@ async function scan(repo) {
     const treeData = await getJson(`https://api.github.com/repos/${repo}/git/trees/${branch}?recursive=1`);
     const tree = treeData.tree || [];
     statusEl.textContent = 'Detecting stack, verification, CI and guardrails…';
-    const texts = await collectTexts(repo, meta.default_branch, tree);
+    const texts = await collectTexts(repo, meta.default_branch, tree, meta.language);
     const analysis = analyze(meta, tree, texts, { truncated: Boolean(treeData.truncated) });
 
     render(repo, meta, analysis);
