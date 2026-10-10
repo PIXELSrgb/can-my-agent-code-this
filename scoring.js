@@ -34,11 +34,14 @@
     const entries = (tree || []).filter(Boolean);
     const originalPaths = entries.map(n => n.path || '').filter(Boolean);
     const paths = originalPaths.map(p => p.toLowerCase());
-    const files = new Set(paths);
     const starts = p => paths.some(x => x.startsWith(p.toLowerCase()));
     const hasAny = predicates => paths.some(path => predicates.some(p => typeof p === 'string' ? path === p : p.test(path)));
     const countAny = regex => paths.filter(p => regex.test(p)).length;
-    const text = p => texts[p.toLowerCase()] || '';
+    const text = p => texts[String(p).toLowerCase()] || '';
+    const hasBasename = names => {
+      const wanted = new Set(names.map(n => n.toLowerCase()));
+      return paths.some(p => wanted.has(p.split('/').pop()));
+    };
 
     const pkg = parsePackage(text('package.json'));
     const scripts = pkg.scripts || {};
@@ -46,19 +49,16 @@
     const packageManager = String(pkg.packageManager || '');
     const engines = pkg.engines || {};
 
-    const manifestPaths = [
+    const stack = detectStack(paths, pkg, texts, meta && meta.language);
+    const manifest = hasBasename([
       'package.json', 'pyproject.toml', 'cargo.toml', 'go.mod', 'pom.xml', 'build.gradle', 'build.gradle.kts',
       'composer.json', 'gemfile', 'mix.exs', 'deno.json', 'deno.jsonc', 'cmakelists.txt', 'module.bazel',
       'workspace', 'workspace.bazel'
-    ];
-    const lockPaths = [
+    ]);
+    const lockfile = hasBasename([
       'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb', 'cargo.lock', 'poetry.lock',
       'uv.lock', 'composer.lock', 'gemfile.lock', 'go.sum', 'mix.lock', 'module.bazel.lock'
-    ];
-
-    const stack = detectStack(paths, pkg, texts, meta && meta.language);
-    const manifest = hasAny(manifestPaths);
-    const lockfile = hasAny(lockPaths);
+    ]);
     const license = Boolean(meta && meta.license) || hasAny([/^license(?:\.[a-z0-9]+)?$/i, /^copying(?:\.[a-z0-9]+)?$/i]);
 
     const agentPaths = originalPaths.filter(p => {
@@ -68,32 +68,38 @@
     const rootAgents = agentPaths.find(p => p.toLowerCase() === 'agents.md');
     const primaryAgent = rootAgents || agentPaths.find(p => ['claude.md','gemini.md','.github/copilot-instructions.md','.cursorrules','.windsurfrules'].includes(p.toLowerCase())) || agentPaths[0];
     const agentText = primaryAgent ? text(primaryAgent) : '';
-    const hasAgentWorkflowGuidance = /(test|verify|check|lint|build|install|run|npm|pnpm|yarn|cargo|pytest|go test|gradle|mvn|bazel|make)/i.test(agentText);
+    const hasAgentWorkflowGuidance = /(test|verify|check|lint|build|install|run|npm|pnpm|yarn|cargo|pytest|go test|gradle|mvn|bazel|make|just)/i.test(agentText);
     const hasAgentGuardrails = /(must not|never|avoid|do not|constraint|scope|preserve|rule|security|dependency)/i.test(agentText);
 
     const hasReadme = paths.some(p => /^readme(?:\.[a-z0-9]+)?$/i.test(p));
     const hasContrib = hasAny(['contributing.md', /^docs\/contributing(?:\.|\/|$)/i, /^\.github\/contributing(?:\.|\/|$)/i]);
-    const hasDocs = starts('docs/') || starts('documentation/');
+    const hasDocs = starts('docs/') || starts('documentation/') || paths.some(p => /(^|\/)docs\//.test(p));
 
     const testFiles = countAny(/(^|\/)(__tests__|tests?|specs?)(\/|$)|\.(test|spec)\.[a-z0-9]+$|_test\.go$/i);
-    const testConfig = hasAny(['pytest.ini','tox.ini','noxfile.py','jest.config.js','jest.config.cjs','jest.config.mjs','vitest.config.js','vitest.config.ts','karma.conf.js','phpunit.xml','phpunit.xml.dist']);
+    const testConfig = hasBasename(['pytest.ini','tox.ini','noxfile.py','jest.config.js','jest.config.cjs','jest.config.mjs','vitest.config.js','vitest.config.ts','karma.conf.js','phpunit.xml','phpunit.xml.dist']);
     const packageTest = scriptNames.some(s => s === 'test' || s.startsWith('test:') || ['check','verify'].includes(s));
     const packageSecondary = scriptNames.some(s => /^(lint|typecheck|type-check|format:check|check:types|build)$/.test(s));
-    const pyprojectText = text('pyproject.toml');
+    const pyprojectText = Object.entries(texts).find(([k]) => k.toLowerCase().endsWith('pyproject.toml'))?.[1] || '';
     const pythonTest = /pytest|unittest|tox|nox/i.test(pyprojectText) || testConfig;
-    const hasTests = testFiles > 0 || packageTest || pythonTest || stack.inlineTests;
-    const canonicalVerify = packageTest ? preferredPackageCommand(scripts) : (hasTests ? stack.verifyCommand : '');
-    const secondaryCheck = packageSecondary || stack.secondaryCheck || hasAny(['.golangci.yml','.golangci.yaml','clippy.toml','rustfmt.toml','.rustfmt.toml','ruff.toml','.ruff.toml','mypy.ini','.eslintrc','.eslintrc.js','eslint.config.js','eslint.config.mjs']);
+    const repoVerify = detectRepoVerification(texts, paths, stack);
+    const hasTests = testFiles > 0 || packageTest || pythonTest || stack.inlineTests || repoVerify.hasTestTarget;
+    const canonicalVerify = packageTest && stack.id === 'node'
+      ? preferredPackageCommand(scripts)
+      : (repoVerify.command || (hasTests ? stack.verifyCommand : ''));
+    const secondaryCheck = packageSecondary || repoVerify.secondaryCheck || stack.secondaryCheck || hasBasename([
+      '.golangci.yml','.golangci.yaml','clippy.toml','rustfmt.toml','.rustfmt.toml','ruff.toml','.ruff.toml','mypy.ini',
+      '.eslintrc','.eslintrc.js','eslint.config.js','eslint.config.mjs'
+    ]);
 
     const workflowPaths = paths.filter(p => /^\.github\/workflows\/[^/]+\.(ya?ml)$/i.test(p));
     const workflowCount = workflowPaths.length;
     const externalCI = hasAny(['.gitlab-ci.yml','circle.yml','.circleci/config.yml','azure-pipelines.yml','jenkinsfile']);
     const hasCI = workflowCount > 0 || externalCI;
-    const verificationWorkflow = workflowPaths.some(p => /(ci|test|check|lint|build|verify)/i.test(p)) || workflowCount >= 3;
+    const verificationWorkflow = workflowPaths.some(p => /(ci|test|check|lint|build|verify|rust|go|python)/i.test(p)) || workflowCount >= 3;
 
-    const reproducibleSetup = Boolean(packageManager || Object.keys(engines).length) || hasAny([
-      '.nvmrc','.node-version','.python-version','.tool-versions','rust-toolchain','rust-toolchain.toml','gradle/wrapper/gradle-wrapper.properties',
-      '.devcontainer/devcontainer.json','dockerfile','docker-compose.yml','docker-compose.yaml','mise.toml'
+    const reproducibleSetup = Boolean(packageManager || Object.keys(engines).length) || hasBasename([
+      '.nvmrc','.node-version','.python-version','.tool-versions','rust-toolchain','rust-toolchain.toml','gradle-wrapper.properties',
+      'devcontainer.json','dockerfile','docker-compose.yml','docker-compose.yaml','mise.toml','.bazelversion'
     ]) || stack.reproducibleByConvention;
 
     const prTemplate = hasAny([/^\.github\/pull_request_template\.md$/i, /^\.github\/pull_request_template\//i, /^docs\/pull_request_template\.md$/i]);
@@ -185,49 +191,79 @@
     return pick ? `npm run ${pick}`.replace('npm run test', 'npm test') : '';
   }
 
+  function detectRepoVerification(texts, paths, stack) {
+    const just = texts['justfile'] || '';
+    const make = texts['makefile'] || texts['gnumakefile'] || '';
+    const task = texts['taskfile.yml'] || texts['taskfile.yaml'] || '';
+    const hasRecipe = (body, name) => new RegExp(`^${name}(?:\\s+[^:]*)?:`, 'mi').test(body);
+    const justTest = ['check','verify','test','ci','bazel-test'].find(name => hasRecipe(just, name));
+    const makeTest = ['check','verify','test','ci'].find(name => new RegExp(`^${name}\\s*:`, 'mi').test(make));
+    const taskTest = ['check','verify','test','ci'].find(name => new RegExp(`^\\s{0,4}${name}\\s*:`, 'mi').test(task));
+    const command = justTest ? `just ${justTest}` : makeTest ? `make ${makeTest}` : taskTest ? `task ${taskTest}` : '';
+    const secondaryCheck = /(fmt-check|format-check|clippy|lint|typecheck|type-check|static|ruff|mypy)/i.test(`${just}\n${make}\n${task}`);
+    return {
+      command,
+      secondaryCheck,
+      hasTestTarget: Boolean(command) || (stack.id === 'bazel' && paths.some(p => /(^|\/)build\.bazel$/.test(p))),
+    };
+  }
+
   function detectStack(paths, pkg, texts, primaryLanguage = '') {
     const set = new Set(paths);
-    const any = (...items) => items.some(x => set.has(x));
-    const text = p => texts[p] || '';
+    const hasBase = name => paths.some(p => p === name || p.endsWith(`/${name}`));
+    const anyBase = (...names) => names.some(hasBase);
     const lang = String(primaryLanguage || '').toLowerCase();
     const present = {
-      node: set.has('package.json'),
-      rust: set.has('cargo.toml'),
-      go: set.has('go.mod'),
-      python: set.has('pyproject.toml') || set.has('setup.py') || set.has('requirements.txt'),
-      gradle: set.has('gradlew') || set.has('build.gradle') || set.has('build.gradle.kts'),
-      maven: set.has('pom.xml'),
-      bazel: set.has('module.bazel') || set.has('workspace') || set.has('workspace.bazel') || set.has('build.bazel'),
-      ruby: set.has('gemfile'),
-      php: set.has('composer.json'),
-      elixir: set.has('mix.exs'),
-      cmake: set.has('cmakelists.txt'),
+      node: hasBase('package.json'),
+      rust: hasBase('cargo.toml'),
+      go: hasBase('go.mod'),
+      python: hasBase('pyproject.toml') || hasBase('setup.py') || hasBase('requirements.txt'),
+      gradle: hasBase('gradlew') || hasBase('build.gradle') || hasBase('build.gradle.kts'),
+      maven: hasBase('pom.xml'),
+      bazel: hasBase('module.bazel') || hasBase('workspace') || hasBase('workspace.bazel') || hasBase('build.bazel'),
+      ruby: hasBase('gemfile'),
+      php: hasBase('composer.json'),
+      elixir: hasBase('mix.exs'),
+      cmake: hasBase('cmakelists.txt'),
     };
-    const stackCount = Object.values(present).filter(Boolean).length;
-    const multi = stackCount > 1 ? ' (multi-stack)' : '';
-    const choose = id => present[id];
+    const languageStackIds = Object.keys(present).filter(k => k !== 'bazel' && present[k]);
+    const multi = languageStackIds.length > 1 || (present.bazel && languageStackIds.length > 0);
+    const suffix = present.bazel && lang !== 'bazel' ? ' + Bazel' : (multi ? ' (multi-stack)' : '');
 
-    if ((lang === 'rust' && choose('rust')) || (!lang && choose('rust') && !choose('node'))) return { id: 'rust', label: `Rust / Cargo${multi}`, verifyCommand: 'cargo test', secondaryCheck: any('rustfmt.toml','.rustfmt.toml','clippy.toml') || paths.some(p => p.endsWith('/clippy.toml')), inlineTests: /\[dev-dependencies\]/i.test(text('cargo.toml')), reproducibleByConvention: any('rust-toolchain','rust-toolchain.toml') };
-    if ((lang === 'go' && choose('go')) || (!lang && choose('go') && !choose('node'))) return { id: 'go', label: `Go${multi}`, verifyCommand: 'go test ./...', secondaryCheck: any('.golangci.yml','.golangci.yaml'), inlineTests: paths.some(p => p.endsWith('_test.go')), reproducibleByConvention: set.has('go.sum') };
-    if ((['python'].includes(lang) && choose('python')) || (!lang && choose('python') && !choose('node'))) return { id: 'python', label: `Python${multi}`, verifyCommand: 'pytest', secondaryCheck: /ruff|mypy|black|flake8/i.test(text('pyproject.toml')) || any('ruff.toml','.ruff.toml','mypy.ini'), inlineTests: false, reproducibleByConvention: any('.python-version','uv.lock','poetry.lock') };
-    if ((['java','kotlin'].includes(lang) && choose('gradle')) || (!lang && choose('gradle') && !choose('node'))) return { id: 'gradle', label: `JVM / Gradle${multi}`, verifyCommand: './gradlew test', secondaryCheck: true, inlineTests: false, reproducibleByConvention: set.has('gradle/wrapper/gradle-wrapper.properties') };
-    if ((['java','kotlin'].includes(lang) && choose('maven')) || (!lang && choose('maven') && !choose('node'))) return { id: 'maven', label: `JVM / Maven${multi}`, verifyCommand: 'mvn test', secondaryCheck: true, inlineTests: false, reproducibleByConvention: false };
-    if (choose('node')) {
-      const scripts = pkg.scripts || {};
-      return { id: 'node', label: `Node.js / JavaScript${multi}`, verifyCommand: scripts.test ? 'npm test' : scripts.check ? 'npm run check' : '', secondaryCheck: Boolean(scripts.lint || scripts.typecheck || scripts['type-check'] || scripts.build), inlineTests: false, reproducibleByConvention: Boolean(pkg.packageManager || (pkg.engines && Object.keys(pkg.engines).length)) };
-    }
-    if (choose('rust')) return { id: 'rust', label: `Rust / Cargo${multi}`, verifyCommand: 'cargo test', secondaryCheck: any('rustfmt.toml','.rustfmt.toml','clippy.toml') || paths.some(p => p.endsWith('/clippy.toml')), inlineTests: /\[dev-dependencies\]/i.test(text('cargo.toml')), reproducibleByConvention: any('rust-toolchain','rust-toolchain.toml') };
-    if (choose('go')) return { id: 'go', label: `Go${multi}`, verifyCommand: 'go test ./...', secondaryCheck: any('.golangci.yml','.golangci.yaml'), inlineTests: paths.some(p => p.endsWith('_test.go')), reproducibleByConvention: set.has('go.sum') };
-    if (choose('python')) return { id: 'python', label: `Python${multi}`, verifyCommand: 'pytest', secondaryCheck: /ruff|mypy|black|flake8/i.test(text('pyproject.toml')) || any('ruff.toml','.ruff.toml','mypy.ini'), inlineTests: false, reproducibleByConvention: any('.python-version','uv.lock','poetry.lock') };
-    if (choose('gradle')) return { id: 'gradle', label: `JVM / Gradle${multi}`, verifyCommand: './gradlew test', secondaryCheck: true, inlineTests: false, reproducibleByConvention: set.has('gradle/wrapper/gradle-wrapper.properties') };
-    if (choose('maven')) return { id: 'maven', label: `JVM / Maven${multi}`, verifyCommand: 'mvn test', secondaryCheck: true, inlineTests: false, reproducibleByConvention: false };
-    if (choose('bazel')) return { id: 'bazel', label: `Bazel${multi}`, verifyCommand: 'bazel test //...', secondaryCheck: true, inlineTests: false, reproducibleByConvention: set.has('module.bazel.lock') };
-    if (choose('ruby')) return { id: 'ruby', label: `Ruby${multi}`, verifyCommand: 'bundle exec rake test', secondaryCheck: false, inlineTests: false, reproducibleByConvention: set.has('gemfile.lock') };
-    if (choose('php')) return { id: 'php', label: `PHP / Composer${multi}`, verifyCommand: 'composer test', secondaryCheck: false, inlineTests: false, reproducibleByConvention: set.has('composer.lock') };
-    if (choose('elixir')) return { id: 'elixir', label: `Elixir / Mix${multi}`, verifyCommand: 'mix test', secondaryCheck: true, inlineTests: false, reproducibleByConvention: set.has('mix.lock') };
-    if (choose('cmake')) return { id: 'cmake', label: `C/C++ / CMake${multi}`, verifyCommand: 'ctest', secondaryCheck: true, inlineTests: false, reproducibleByConvention: false };
+    const rust = () => ({ id: 'rust', label: `Rust / Cargo${suffix}`, verifyCommand: hasBase('justfile') ? 'just test' : (paths.some(p => p === 'cargo.toml') ? 'cargo test' : 'cargo test --workspace'), secondaryCheck: anyBase('rustfmt.toml','.rustfmt.toml','clippy.toml') || paths.some(p => p.endsWith('/clippy.toml')), inlineTests: paths.some(p => /(^|\/)tests?\//.test(p) && p.endsWith('.rs')) || /\[dev-dependencies\]/i.test(Object.entries(texts).find(([k]) => k.endsWith('cargo.toml'))?.[1] || ''), reproducibleByConvention: anyBase('rust-toolchain','rust-toolchain.toml') });
+    const go = () => ({ id: 'go', label: `Go${suffix}`, verifyCommand: 'go test ./...', secondaryCheck: anyBase('.golangci.yml','.golangci.yaml'), inlineTests: paths.some(p => p.endsWith('_test.go')), reproducibleByConvention: hasBase('go.sum') });
+    const python = () => ({ id: 'python', label: `Python${suffix}`, verifyCommand: 'pytest', secondaryCheck: /ruff|mypy|black|flake8/i.test(Object.entries(texts).find(([k]) => k.endsWith('pyproject.toml'))?.[1] || '') || anyBase('ruff.toml','.ruff.toml','mypy.ini'), inlineTests: false, reproducibleByConvention: anyBase('.python-version','uv.lock','poetry.lock') });
+    const gradle = () => ({ id: 'gradle', label: `JVM / Gradle${suffix}`, verifyCommand: './gradlew test', secondaryCheck: true, inlineTests: false, reproducibleByConvention: hasBase('gradle-wrapper.properties') });
+    const maven = () => ({ id: 'maven', label: `JVM / Maven${suffix}`, verifyCommand: 'mvn test', secondaryCheck: true, inlineTests: false, reproducibleByConvention: false });
+    const node = () => { const scripts = pkg.scripts || {}; return { id: 'node', label: `Node.js / JavaScript${suffix}`, verifyCommand: scripts.check ? 'npm run check' : scripts.test ? 'npm test' : '', secondaryCheck: Boolean(scripts.lint || scripts.typecheck || scripts['type-check'] || scripts.build), inlineTests: false, reproducibleByConvention: Boolean(pkg.packageManager || (pkg.engines && Object.keys(pkg.engines).length)) }; };
+
+    if (lang === 'rust' && present.rust) return rust();
+    if (lang === 'go' && present.go) return go();
+    if (lang === 'python' && present.python) return python();
+    if (['java','kotlin'].includes(lang) && present.gradle) return gradle();
+    if (['java','kotlin'].includes(lang) && present.maven) return maven();
+    if (['javascript','typescript'].includes(lang) && present.node) return node();
+
+    if (set.has('cargo.toml')) return rust();
+    if (set.has('go.mod')) return go();
+    if (set.has('pyproject.toml') || set.has('setup.py')) return python();
+    if (set.has('build.gradle') || set.has('build.gradle.kts') || set.has('gradlew')) return gradle();
+    if (set.has('pom.xml')) return maven();
+    if (set.has('package.json')) return node();
+
+    if (present.rust) return rust();
+    if (present.go) return go();
+    if (present.python) return python();
+    if (present.gradle) return gradle();
+    if (present.maven) return maven();
+    if (present.node) return node();
+    if (present.bazel) return { id: 'bazel', label: 'Bazel', verifyCommand: 'bazel test //...', secondaryCheck: true, inlineTests: false, reproducibleByConvention: hasBase('module.bazel.lock') || hasBase('.bazelversion') };
+    if (present.ruby) return { id: 'ruby', label: `Ruby${multi ? ' (multi-stack)' : ''}`, verifyCommand: 'bundle exec rake test', secondaryCheck: false, inlineTests: false, reproducibleByConvention: hasBase('gemfile.lock') };
+    if (present.php) return { id: 'php', label: `PHP / Composer${multi ? ' (multi-stack)' : ''}`, verifyCommand: 'composer test', secondaryCheck: false, inlineTests: false, reproducibleByConvention: hasBase('composer.lock') };
+    if (present.elixir) return { id: 'elixir', label: `Elixir / Mix${multi ? ' (multi-stack)' : ''}`, verifyCommand: 'mix test', secondaryCheck: true, inlineTests: false, reproducibleByConvention: hasBase('mix.lock') };
+    if (present.cmake) return { id: 'cmake', label: `C/C++ / CMake${multi ? ' (multi-stack)' : ''}`, verifyCommand: 'ctest', secondaryCheck: true, inlineTests: false, reproducibleByConvention: false };
     return { id: 'unknown', label: 'Mixed / unknown', verifyCommand: '', secondaryCheck: false, inlineTests: false, reproducibleByConvention: false };
   }
 
-  return { CATEGORIES, normalizeRepo, analyze, detectStack };
+  return { CATEGORIES, normalizeRepo, analyze, detectStack, detectRepoVerification };
 });
